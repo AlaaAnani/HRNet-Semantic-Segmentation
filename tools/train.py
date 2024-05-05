@@ -83,9 +83,9 @@ def main():
     }
 
     # cudnn related setting
-    # cudnn.benchmark = config.CUDNN.BENCHMARK
-    # cudnn.deterministic = config.CUDNN.DETERMINISTIC
-    # cudnn.enabled = config.CUDNN.ENABLED
+    cudnn.benchmark = config.CUDNN.BENCHMARK
+    cudnn.deterministic = config.CUDNN.DETERMINISTIC
+    cudnn.enabled = config.CUDNN.ENABLED
     n_gpus = torch.cuda.device_count()
     gpus = [i for i in range(n_gpus)]
     print(f"Number of GPUs available: {n_gpus}")   
@@ -290,21 +290,21 @@ def main():
     best_mIoU_natural = 0
     for epoch in range(last_epoch, end_epoch):
 
-        # current_trainloader = extra_trainloader if epoch >= config.TRAIN.END_EPOCH else trainloader
-        # if current_trainloader.sampler is not None and hasattr(current_trainloader.sampler, 'set_epoch'):
-        #     current_trainloader.sampler.set_epoch(epoch)
+        current_trainloader = extra_trainloader if epoch >= config.TRAIN.END_EPOCH else trainloader
+        if current_trainloader.sampler is not None and hasattr(current_trainloader.sampler, 'set_epoch'):
+            current_trainloader.sampler.set_epoch(epoch)
 
-        # if epoch >= config.TRAIN.END_EPOCH:
-        #     train(config, epoch-config.TRAIN.END_EPOCH, 
-        #           config.TRAIN.EXTRA_EPOCH, extra_epoch_iters, 
-        #           config.TRAIN.EXTRA_LR, extra_iters, 
-        #           extra_trainloader, optimizer, model, writer_dict, alternate_every=config.TRAIN.ALT_EVERY, 
-        #           sigma=config.TRAIN.SIGMA)
-        # else:
-        #     train(config, epoch, config.TRAIN.END_EPOCH, 
-        #           epoch_iters, config.TRAIN.LR, num_iters,
-        #           trainloader, optimizer, model, writer_dict, alternate_every=config.TRAIN.ALT_EVERY, 
-        #           sigma=config.TRAIN.SIGMA)
+        if epoch >= config.TRAIN.END_EPOCH:
+            train(config, epoch-config.TRAIN.END_EPOCH, 
+                  config.TRAIN.EXTRA_EPOCH, extra_epoch_iters, 
+                  config.TRAIN.EXTRA_LR, extra_iters, 
+                  extra_trainloader, optimizer, model, writer_dict, alternate_every=config.TRAIN.ALT_EVERY, 
+                  sigma=config.TRAIN.SIGMA)
+        else:
+            train(config, epoch, config.TRAIN.END_EPOCH, 
+                  epoch_iters, config.TRAIN.LR, num_iters,
+                  trainloader, optimizer, model, writer_dict, alternate_every=config.TRAIN.ALT_EVERY, 
+                  sigma=config.TRAIN.SIGMA)
         print(f'Validating with a noise of {config.TRAIN.SIGMA}')
         valid_loss_sigma, mean_IoU_sigma, pixel_acc_sigma, IoU_array_sigma = validate(config, 
                     testloader, model, writer_dict, sigma=config.TRAIN.SIGMA)
@@ -315,19 +315,19 @@ def main():
         if args.local_rank <= 0:
             logger.info('=> saving checkpoint to {}'.format(
                 final_output_dir + 'checkpoint.pth.tar'))
-            # torch.save({
-            #     'epoch': epoch+1,
-            #     'best_mIoU': best_mIoU_natural,
-            #     'pixel_acc': pixel_acc,
-            #     'state_dict': model.module.state_dict(),
-            #     'optimizer': optimizer.state_dict(),
-            # }, os.path.join(final_output_dir,'checkpoint.pth.tar'))
+            torch.save({
+                'epoch': epoch+1,
+                'best_mIoU': best_mIoU_natural,
+                'pixel_acc': pixel_acc,
+                'state_dict': model.module.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }, os.path.join(final_output_dir,'checkpoint.pth.tar'))
             if (mean_IoU + mean_IoU_sigma)/2.0 > best_mIoU or True:
                 best_mIoU = (mean_IoU + mean_IoU_sigma)/2.0
                 best_mIoU_sigma = mean_IoU_sigma
                 best_mIoU_natural = mean_IoU
-                # torch.save(model.module.state_dict(),
-                #         os.path.join(final_output_dir, 'best.pth'))
+                torch.save(model.module.state_dict(),
+                        os.path.join(final_output_dir, 'best.pth'))
             msg = 'ADV: Loss: {:.3f}, MeanIU: {: 4.4f}, Best_mIoU: {: 4.4f}, PixelACC {: 4.4f}'.format(
                         valid_loss_sigma, mean_IoU_sigma, best_mIoU_sigma, pixel_acc_sigma)
             print(msg)
@@ -337,18 +337,18 @@ def main():
             print(msg)
             logging.info(msg)
             logging.info(f'Best average mIoU = {best_mIoU}')
-            #logging.info(IoU_array)
+            logging.info(IoU_array)
         break
 
-    # if args.local_rank <= 0:
+    if args.local_rank <= 0:
 
-    #     torch.save(model.module.state_dict(),
-    #             os.path.join(final_output_dir, 'final_state.pth'))
+        torch.save(model.module.state_dict(),
+                os.path.join(final_output_dir, 'final_state.pth'))
 
-    #     writer_dict['writer'].close()
-    #     end = timeit.default_timer()
-    #     logger.info('Hours: %d' % np.int_((end-start)/3600))
-    #     logger.info('Done')
+        writer_dict['writer'].close()
+        end = timeit.default_timer()
+        logger.info('Hours: %d' % np.int_((end-start)/3600))
+        logger.info('Done')
 
 
 if __name__ == '__main__':
