@@ -10,13 +10,12 @@ import cv2
 import numpy as np
 from PIL import Image
 import random
-
 import torch
 from torch.nn import functional as F
 
 from .base_dataset import BaseDataset
 
-class Cityscapes(BaseDataset):
+class ACDC(BaseDataset):
     def __init__(self, 
                  root, 
                  list_path, 
@@ -36,7 +35,7 @@ class Cityscapes(BaseDataset):
                 jobid=1,
                 numjobs=1):
 
-        super(Cityscapes, self).__init__(ignore_label, base_size,
+        super(ACDC, self).__init__(ignore_label, base_size,
                                          crop_size, downsample_rate, scale_factor, mean, std,normalize, )
 
         self.root = root
@@ -108,7 +107,6 @@ class Cityscapes(BaseDataset):
             for k, v in self.label_mapping.items():
                 label[temp == k] = v
         return label
-    
     def gen_sample(self, image, label, 
             multi_scale=True, is_flip=True, center_crop_test=False):
         if multi_scale:
@@ -143,7 +141,7 @@ class Cityscapes(BaseDataset):
     def __getitem__(self, index):
         item = self.files[index]
         name = item["name"]
-        image = cv2.imread(os.path.join(self.root,'cityscapes',item["img"]),
+        image = cv2.imread(os.path.join(self.root,'acdc',item["img"]),
                            cv2.IMREAD_COLOR)
         size = image.shape
 
@@ -153,7 +151,7 @@ class Cityscapes(BaseDataset):
 
             return image.copy(), np.array(size), name
 
-        label = cv2.imread(os.path.join(self.root,'cityscapes',item["label"]),
+        label = cv2.imread(os.path.join(self.root,'acdc',item["label"]),
                            cv2.IMREAD_GRAYSCALE)
         label = self.convert_label(label)
 
@@ -181,8 +179,7 @@ class Cityscapes(BaseDataset):
         return out
 
 
-    def multi_scale_inference_noisybatch(self, config, model, n, sigma, image_np, normalize=True, scales=[1], 
-                                         flip=False, unscaled=False, cuda_id=0, border_padding=None, size=None):
+    def multi_scale_inference_noisybatch(self, config, model, n, sigma, image_np, normalize=True, scales=[1], flip=False, unscaled=False, cuda_id=0, border_padding=None, size=None):
         if unscaled: assert len(scales) == 1 and scales[0] <= 1.0
         ori_height, ori_width, _ = image_np.shape
         stride_h = np.int_(self.crop_size[0] * 1.0)
@@ -321,3 +318,6 @@ class Cityscapes(BaseDataset):
             save_img = Image.fromarray(pred)
             save_img.putpalette(palette)
             save_img.save(os.path.join(sv_path, name[i]+'.png'))
+
+        
+        

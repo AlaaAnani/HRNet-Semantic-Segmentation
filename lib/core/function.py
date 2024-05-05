@@ -38,7 +38,7 @@ def reduce_tensor(inp):
 
 
 def train(config, epoch, num_epoch, epoch_iters, base_lr,
-          num_iters, trainloader, optimizer, model, writer_dict):
+          num_iters, trainloader, optimizer, model, writer_dict, alternate_every=2, sigma=0):
     # Training
     model.train()
 
@@ -53,8 +53,11 @@ def train(config, epoch, num_epoch, epoch_iters, base_lr,
         images, labels, _, _ = batch
         images = images.cuda()
         labels = labels.long().cuda()
-
-        losses, _ = model(images, labels)
+        if i_iter % alternate_every == 0:
+            noise = 0
+        else:
+            noise = sigma
+        losses, _ = model(images, labels, noise)
         loss = losses.mean()
 
         if dist.is_distributed():
@@ -88,7 +91,7 @@ def train(config, epoch, num_epoch, epoch_iters, base_lr,
     writer.add_scalar('train_loss', ave_loss.average(), global_steps)
     writer_dict['train_global_steps'] = global_steps + 1
 
-def validate(config, testloader, model, writer_dict):
+def validate(config, testloader, model, writer_dict, sigma=0):
     model.eval()
     ave_loss = AverageMeter()
     nums = config.MODEL.NUM_OUTPUTS
@@ -96,12 +99,12 @@ def validate(config, testloader, model, writer_dict):
         (config.DATASET.NUM_CLASSES, config.DATASET.NUM_CLASSES, nums))
     with torch.no_grad():
         for idx, batch in enumerate(testloader):
-            image, label, _, _ = batch
+            image, label, _, _, _ = batch
             size = label.size()
             image = image.cuda()
             label = label.long().cuda()
 
-            losses, pred = model(image, label)
+            losses, pred = model(image, label, sigma)
             if not isinstance(pred, (list, tuple)):
                 pred = [pred]
             for i, x in enumerate(pred):
@@ -118,8 +121,8 @@ def validate(config, testloader, model, writer_dict):
                     config.TRAIN.IGNORE_LABEL
                 )
 
-            if idx % 10 == 0:
-                print(idx)
+            # if idx % 10 == 0:
+            #     print(idx)
 
             loss = losses.mean()
             if dist.is_distributed():
@@ -137,17 +140,19 @@ def validate(config, testloader, model, writer_dict):
         pos = confusion_matrix[..., i].sum(1)
         res = confusion_matrix[..., i].sum(0)
         tp = np.diag(confusion_matrix[..., i])
+        pixel_acc = tp.sum()/pos.sum()
         IoU_array = (tp / np.maximum(1.0, pos + res - tp))
         mean_IoU = IoU_array.mean()
         if dist.get_rank() <= 0:
-            logging.info('{} {} {}'.format(i, IoU_array, mean_IoU))
-
+            logging.info('{} {} {}'.format(i, pixel_acc, mean_IoU))
+    print('Done validating!')
     writer = writer_dict['writer']
     global_steps = writer_dict['valid_global_steps']
-    writer.add_scalar('valid_loss', ave_loss.average(), global_steps)
-    writer.add_scalar('valid_mIoU', mean_IoU, global_steps)
+    writer.add_scalar(f'valid_loss_{sigma}', ave_loss.average(), global_steps)
+    writer.add_scalar(f'valid_mIoU_{sigma}', mean_IoU, global_steps)
+    writer.add_scalar(f'valid_pixel_acc_{sigma}', pixel_acc, global_steps)
     writer_dict['valid_global_steps'] = global_steps + 1
-    return ave_loss.average(), mean_IoU, IoU_array
+    return ave_loss.average(), mean_IoU, pixel_acc, IoU_array
 
 
 def testval(config, test_dataset, testloader, model,
@@ -189,7 +194,7 @@ def testval(config, test_dataset, testloader, model,
                     os.mkdir(sv_path)
                 test_dataset.save_pred(pred, sv_path, name)
 
-            if index % 100 == 0:
+            if index % 10 == 0:
                 logging.info('processing: %d images' % index)
                 pos = confusion_matrix.sum(1)
                 res = confusion_matrix.sum(0)
@@ -197,6 +202,8 @@ def testval(config, test_dataset, testloader, model,
                 IoU_array = (tp / np.maximum(1.0, pos + res - tp))
                 mean_IoU = IoU_array.mean()
                 logging.info('mIoU: %.4f' % (mean_IoU))
+                pixel_acc = tp.sum()/pos.sum()
+                print('Pixel accuracy', pixel_acc)
 
     pos = confusion_matrix.sum(1)
     res = confusion_matrix.sum(0)
@@ -205,7 +212,7 @@ def testval(config, test_dataset, testloader, model,
     mean_acc = (tp/np.maximum(1.0, pos)).mean()
     IoU_array = (tp / np.maximum(1.0, pos + res - tp))
     mean_IoU = IoU_array.mean()
-
+    
     return mean_IoU, IoU_array, pixel_acc, mean_acc
 
 

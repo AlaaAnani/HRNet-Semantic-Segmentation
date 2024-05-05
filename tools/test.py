@@ -35,7 +35,7 @@ def parse_args():
     
     parser.add_argument('--cfg',
                         help='experiment configure file name',
-                        required=True,
+                        default='experiments/cocostuff/seg_hrnet_ocr_adv025_3965_alt_w48_520x520_ohem_sgd_lr1e-3_wd1e-4_bs_16_epoch110_paddle.yaml',
                         type=str)
     parser.add_argument('opts',
                         help="Modify config options using the command-line",
@@ -57,9 +57,9 @@ def main():
     logger.info(pprint.pformat(config))
 
     # cudnn related setting
-    cudnn.benchmark = config.CUDNN.BENCHMARK
-    cudnn.deterministic = config.CUDNN.DETERMINISTIC
-    cudnn.enabled = config.CUDNN.ENABLED
+    # cudnn.benchmark = config.CUDNN.BENCHMARK
+    # cudnn.deterministic = config.CUDNN.DETERMINISTIC
+    # cudnn.enabled = config.CUDNN.ENABLED
 
     # build model
     if torch.__version__.startswith('1'):
@@ -76,7 +76,8 @@ def main():
     if config.TEST.MODEL_FILE:
         model_state_file = config.TEST.MODEL_FILE
     else:
-        model_state_file = os.path.join(final_output_dir, 'final_state.pth')        
+        model_state_file = os.path.join(final_output_dir, 'final_state.pth')  
+    print('model_state_file is', model_state_file)      
     logger.info('=> loading model from {}'.format(model_state_file))
         
     pretrained_dict = torch.load(model_state_file)
@@ -91,7 +92,7 @@ def main():
     model_dict.update(pretrained_dict)
     model.load_state_dict(model_dict)
 
-    gpus = list(config.GPUS)
+    gpus = list(range(torch.cuda.device_count()))
     model = nn.DataParallel(model, device_ids=gpus).cuda()
 
     # prepare data
@@ -135,7 +136,7 @@ def main():
              sv_dir=final_output_dir)
 
     end = timeit.default_timer()
-    logger.info('Mins: %d' % np.int((end-start)/60))
+    logger.info('Mins: %d' % np.int_((end-start)/60))
     logger.info('Done')
 
 

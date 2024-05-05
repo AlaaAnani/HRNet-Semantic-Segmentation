@@ -17,6 +17,7 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class FullModel(nn.Module):
   """
@@ -33,7 +34,29 @@ class FullModel(nn.Module):
   def forward(self, inputs, labels, *args, **kwargs):
     outputs = self.model(inputs, *args, **kwargs)
     loss = self.loss(outputs, labels)
-    return torch.unsqueeze(loss,0), outputs
+    return torch.unsqueeze(loss, 0), outputs
+
+class GaussianAugModel(FullModel):
+  def __init__(self, model, loss, sigma=0, std=1):
+    super(GaussianAugModel, self).__init__(model, loss)
+    self.sigma = sigma
+    self.std = torch.nn.Parameter(torch.tensor(std).reshape(1, 3, 1, 1), requires_grad=False)
+
+  def forward(self, inputs, labels, sigma=0, *args, **kwargs):
+    if sigma > 0:
+      inputs = inputs + sigma * torch.randn_like(inputs) / self.std
+    outputs = self.model(inputs, *args, **kwargs)
+    loss = self.loss(outputs, labels)
+    return torch.unsqueeze(loss, 0), outputs
+
+def kl_div(input, targets):
+  return F.kl_div(F.log_softmax(input, dim=1), targets, reduction='none').sum(1)
+
+
+def entropy(input):
+    logsoftmax = torch.log(input.clamp(min=1e-20))
+    xent = (-input * logsoftmax).sum(1)
+    return xent
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -104,16 +127,51 @@ def create_logger(cfg, cfg_name, phase='train'):
 
     return logger, str(final_output_dir), str(tensorboard_log_dir)
 
-def get_confusion_matrix(label, pred, size, num_class, ignore=-1):
+def find_boundaries_torch(segmentation_map, margin=1):
+    # Ensure segmentation_map is a 2D tensor with shape [Height, Width]
+    device = segmentation_map.device
+    
+    # Expand segmentation_map to have batch and channel dimensions
+    segmentation_map_expanded = segmentation_map.unsqueeze(0).unsqueeze(0).to(torch.float32)
+    
+    # Create a kernel with a single '1' in the center (to compare with neighbors)
+    kernel_size = 2 * margin + 1
+    kernel = torch.zeros((kernel_size, kernel_size), device=device)
+    kernel[margin, margin] = 1.
+    kernel = kernel.unsqueeze(0).unsqueeze(0)
+
+    # Use 'valid' convolution to compare center against its surroundings
+    center_values = F.conv2d(segmentation_map_expanded, kernel, padding=margin)
+    
+    # Dilation to represent spread of values across specified margin
+    dilated_values = F.max_pool2d(segmentation_map_expanded, kernel_size, stride=1, padding=margin)
+
+    # Boundary condition: pixels where dilated value does not match center value
+    boundaries = (dilated_values != center_values).squeeze()
+
+    return boundaries
+
+def get_confusion_matrix(label, pred, size, num_class, ignore=-1, abstain=None):
     """
     Calcute the confusion matrix by given label and pred
     """
-    output = pred.cpu().numpy().transpose(0, 2, 3, 1)
-    seg_pred = np.asarray(np.argmax(output, axis=3), dtype=np.uint8)
+    if isinstance(pred, np.ndarray):
+        pred = torch.from_numpy(pred)
+    if isinstance(label, np.ndarray):
+        label = torch.from_numpy(label)
+    if len(pred.shape) == 4:
+        output = pred.cpu().numpy().transpose(0, 2, 3, 1)
+        seg_pred = np.asarray(np.argmax(output, axis=3), dtype=np.uint8)
+    else:
+        seg_pred = pred.cpu().numpy()
     seg_gt = np.asarray(
-    label.cpu().numpy()[:, :size[-2], :size[-1]], dtype=np.int)
+    label.cpu().numpy()[:, :size[-2], :size[-1]], dtype=np.int_)
 
     ignore_index = seg_gt != ignore
+    # if abstain is not None:
+    #     certify_index = np.array(pred != abstain)
+    #     ignore_index = ignore_index & certify_index
+        
     seg_gt = seg_gt[ignore_index]
     seg_pred = seg_pred[ignore_index]
 
@@ -128,6 +186,24 @@ def get_confusion_matrix(label, pred, size, num_class, ignore=-1):
                 confusion_matrix[i_label,
                                  i_pred] = label_count[cur_index]
     return confusion_matrix
+
+def acc(pred, label, ignore_label=255, stats=False):
+    if isinstance(pred, torch.Tensor):
+        pred = pred.cpu().numpy()
+    if isinstance(label, torch.Tensor):
+        label = label.cpu().numpy()
+    pred = pred.flatten()
+    label = label.flatten()
+    
+    non_ignore_idx = label != ignore_label
+    pos = (pred == label)[non_ignore_idx].sum()
+    count = non_ignore_idx.sum()
+    if stats:
+        d = {}
+        d['pixels_count'] = count
+        d['positive_count'] = pos
+        return pos/count, d
+    return pos/count
 
 def adjust_learning_rate(optimizer, base_lr, max_iters, 
         cur_iters, power=0.9, nbb_mult=10):

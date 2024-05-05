@@ -31,15 +31,16 @@ from config import update_config
 from core.criterion import CrossEntropy, OhemCrossEntropy
 from core.function import train, validate
 from utils.modelsummary import get_model_summary
-from utils.utils import create_logger, FullModel
+from utils.utils import create_logger, FullModel, GaussianAugModel
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train segmentation network')
     
     parser.add_argument('--cfg',
                         help='experiment configure file name',
-                        required=True,
+                        default='experiments/cocostuff/seg_hrnet_ocr_adv025_3965_alt_w48_520x520_ohem_sgd_lr1e-3_wd1e-4_bs_16_epoch110_paddle.yaml',
                         type=str)
+    parser.add_argument('--sigma', type=int, default=0.25)
     parser.add_argument('--seed', type=int, default=304)
     parser.add_argument("--local_rank", type=int, default=-1)       
     parser.add_argument('opts',
@@ -82,10 +83,12 @@ def main():
     }
 
     # cudnn related setting
-    cudnn.benchmark = config.CUDNN.BENCHMARK
-    cudnn.deterministic = config.CUDNN.DETERMINISTIC
-    cudnn.enabled = config.CUDNN.ENABLED
-    gpus = list(config.GPUS)
+    # cudnn.benchmark = config.CUDNN.BENCHMARK
+    # cudnn.deterministic = config.CUDNN.DETERMINISTIC
+    # cudnn.enabled = config.CUDNN.ENABLED
+    n_gpus = torch.cuda.device_count()
+    gpus = [i for i in range(n_gpus)]
+    print(f"Number of GPUs available: {n_gpus}")   
     distributed = args.local_rank >= 0
     if distributed:
         device = torch.device('cuda:{}'.format(args.local_rank))    
@@ -164,7 +167,7 @@ def main():
             pin_memory=True,
             drop_last=True,
             sampler=extra_train_sampler)
-        extra_epoch_iters = np.int(extra_train_dataset.__len__() / 
+        extra_epoch_iters = np.int_(extra_train_dataset.__len__() / 
                         config.TRAIN.BATCH_SIZE_PER_GPU / len(gpus))
 
 
@@ -184,7 +187,7 @@ def main():
     test_sampler = get_sampler(test_dataset)
     testloader = torch.utils.data.DataLoader(
         test_dataset,
-        batch_size=batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=config.WORKERS,
         pin_memory=True,
@@ -199,8 +202,11 @@ def main():
     else:
         criterion = CrossEntropy(ignore_label=config.TRAIN.IGNORE_LABEL,
                                     weight=train_dataset.class_weights)
-
-    model = FullModel(model, criterion)
+    if config.TRAIN.SIGMA > 0:
+        model = GaussianAugModel(model, criterion, config.TRAIN.SIGMA, std=train_dataset.std)
+    else:
+        model = FullModel(model, criterion)
+        
     if distributed:
         model = model.to(device)
         model = torch.nn.parallel.DistributedDataParallel(
@@ -241,24 +247,39 @@ def main():
     else:
         raise ValueError('Only Support SGD optimizer')
 
-    epoch_iters = np.int(train_dataset.__len__() / 
+    epoch_iters = np.int_(train_dataset.__len__() / 
                         config.TRAIN.BATCH_SIZE_PER_GPU / len(gpus))
         
     best_mIoU = 0
     last_epoch = 0
     if config.TRAIN.RESUME:
-        model_state_file = os.path.join(final_output_dir,
-                                        'checkpoint.pth.tar')
+        # model_state_file = os.path.join(final_output_dir,
+        #                                 'checkpoint.pth.tar')
+        model_state_file = config.TEST.MODEL_FILE
         if os.path.isfile(model_state_file):
             checkpoint = torch.load(model_state_file, map_location={'cuda:0': 'cpu'})
-            best_mIoU = checkpoint['best_mIoU']
-            last_epoch = checkpoint['epoch']
-            dct = checkpoint['state_dict']
+            if 'best_mIoU' in checkpoint:
+                best_mIoU = checkpoint['best_mIoU']
+                best_mIoU_natural = best_mIoU
+            else:
+                best_mIoU = 0
+                best_mIoU_natural = 0
+            if 'epoch' in checkpoint:
+                last_epoch = checkpoint['epoch']
+            else:
+                last_epoch = 0
             
-            model.module.model.load_state_dict({k.replace('model.', ''): v for k, v in checkpoint['state_dict'].items() if k.startswith('model.')})
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            logger.info("=> loaded checkpoint (epoch {})"
-                        .format(checkpoint['epoch']))
+
+            if 'state_dict' in checkpoint:
+                pretrained_dict = checkpoint['state_dict']
+            else:
+                pretrained_dict = checkpoint
+
+            model.module.model.load_state_dict({k.replace('model.', ''): v for k, v in pretrained_dict.items() if k.startswith('model.')})
+            if 'optimizer' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer'])
+            logger.info("=> loaded checkpoint {} (epoch {})"
+                        .format(model_state_file, last_epoch))
         if distributed:
             torch.distributed.barrier()
 
@@ -266,56 +287,68 @@ def main():
     end_epoch = config.TRAIN.END_EPOCH + config.TRAIN.EXTRA_EPOCH
     num_iters = config.TRAIN.END_EPOCH * epoch_iters
     extra_iters = config.TRAIN.EXTRA_EPOCH * extra_epoch_iters
-    
+    best_mIoU_natural = 0
     for epoch in range(last_epoch, end_epoch):
 
-        current_trainloader = extra_trainloader if epoch >= config.TRAIN.END_EPOCH else trainloader
-        if current_trainloader.sampler is not None and hasattr(current_trainloader.sampler, 'set_epoch'):
-            current_trainloader.sampler.set_epoch(epoch)
+        # current_trainloader = extra_trainloader if epoch >= config.TRAIN.END_EPOCH else trainloader
+        # if current_trainloader.sampler is not None and hasattr(current_trainloader.sampler, 'set_epoch'):
+        #     current_trainloader.sampler.set_epoch(epoch)
 
-        # valid_loss, mean_IoU, IoU_array = validate(config, 
-        #             testloader, model, writer_dict)
-
-        if epoch >= config.TRAIN.END_EPOCH:
-            train(config, epoch-config.TRAIN.END_EPOCH, 
-                  config.TRAIN.EXTRA_EPOCH, extra_epoch_iters, 
-                  config.TRAIN.EXTRA_LR, extra_iters, 
-                  extra_trainloader, optimizer, model, writer_dict)
-        else:
-            train(config, epoch, config.TRAIN.END_EPOCH, 
-                  epoch_iters, config.TRAIN.LR, num_iters,
-                  trainloader, optimizer, model, writer_dict)
-
-        valid_loss, mean_IoU, IoU_array = validate(config, 
-                    testloader, model, writer_dict)
+        # if epoch >= config.TRAIN.END_EPOCH:
+        #     train(config, epoch-config.TRAIN.END_EPOCH, 
+        #           config.TRAIN.EXTRA_EPOCH, extra_epoch_iters, 
+        #           config.TRAIN.EXTRA_LR, extra_iters, 
+        #           extra_trainloader, optimizer, model, writer_dict, alternate_every=config.TRAIN.ALT_EVERY, 
+        #           sigma=config.TRAIN.SIGMA)
+        # else:
+        #     train(config, epoch, config.TRAIN.END_EPOCH, 
+        #           epoch_iters, config.TRAIN.LR, num_iters,
+        #           trainloader, optimizer, model, writer_dict, alternate_every=config.TRAIN.ALT_EVERY, 
+        #           sigma=config.TRAIN.SIGMA)
+        print(f'Validating with a noise of {config.TRAIN.SIGMA}')
+        valid_loss_sigma, mean_IoU_sigma, pixel_acc_sigma, IoU_array_sigma = validate(config, 
+                    testloader, model, writer_dict, sigma=config.TRAIN.SIGMA)
+        print(f'Validating without noise')
+        valid_loss, mean_IoU, pixel_acc, IoU_array = validate(config, 
+                    testloader, model, writer_dict, sigma=0)
 
         if args.local_rank <= 0:
             logger.info('=> saving checkpoint to {}'.format(
                 final_output_dir + 'checkpoint.pth.tar'))
-            torch.save({
-                'epoch': epoch+1,
-                'best_mIoU': best_mIoU,
-                'state_dict': model.module.state_dict(),
-                'optimizer': optimizer.state_dict(),
-            }, os.path.join(final_output_dir,'checkpoint.pth.tar'))
-            if mean_IoU > best_mIoU:
-                best_mIoU = mean_IoU
-                torch.save(model.module.state_dict(),
-                        os.path.join(final_output_dir, 'best.pth'))
-            msg = 'Loss: {:.3f}, MeanIU: {: 4.4f}, Best_mIoU: {: 4.4f}'.format(
-                        valid_loss, mean_IoU, best_mIoU)
+            # torch.save({
+            #     'epoch': epoch+1,
+            #     'best_mIoU': best_mIoU_natural,
+            #     'pixel_acc': pixel_acc,
+            #     'state_dict': model.module.state_dict(),
+            #     'optimizer': optimizer.state_dict(),
+            # }, os.path.join(final_output_dir,'checkpoint.pth.tar'))
+            if (mean_IoU + mean_IoU_sigma)/2.0 > best_mIoU or True:
+                best_mIoU = (mean_IoU + mean_IoU_sigma)/2.0
+                best_mIoU_sigma = mean_IoU_sigma
+                best_mIoU_natural = mean_IoU
+                # torch.save(model.module.state_dict(),
+                #         os.path.join(final_output_dir, 'best.pth'))
+            msg = 'ADV: Loss: {:.3f}, MeanIU: {: 4.4f}, Best_mIoU: {: 4.4f}, PixelACC {: 4.4f}'.format(
+                        valid_loss_sigma, mean_IoU_sigma, best_mIoU_sigma, pixel_acc_sigma)
+            print(msg)
             logging.info(msg)
-            logging.info(IoU_array)
+            msg = 'Natural: Loss: {:.3f}, MeanIU: {: 4.4f}, Best_mIoU: {: 4.4f}, PixelACC {: 4.4f}'.format(
+                        valid_loss, mean_IoU, best_mIoU_natural, pixel_acc)
+            print(msg)
+            logging.info(msg)
+            logging.info(f'Best average mIoU = {best_mIoU}')
+            #logging.info(IoU_array)
+        break
 
-    if args.local_rank <= 0:
+    # if args.local_rank <= 0:
 
-        torch.save(model.module.state_dict(),
-                os.path.join(final_output_dir, 'final_state.pth'))
+    #     torch.save(model.module.state_dict(),
+    #             os.path.join(final_output_dir, 'final_state.pth'))
 
-        writer_dict['writer'].close()
-        end = timeit.default_timer()
-        logger.info('Hours: %d' % np.int((end-start)/3600))
-        logger.info('Done')
+    #     writer_dict['writer'].close()
+    #     end = timeit.default_timer()
+    #     logger.info('Hours: %d' % np.int_((end-start)/3600))
+    #     logger.info('Done')
 
 
 if __name__ == '__main__':

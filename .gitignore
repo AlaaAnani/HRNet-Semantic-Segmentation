@@ -8,3 +8,7 @@ pretrained_models
 scripts/
 detail-api/
 data/list
+*.pth
+
+models/part_seg/*
+models/*

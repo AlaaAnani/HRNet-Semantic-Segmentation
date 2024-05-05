@@ -127,6 +127,15 @@ _C.DEBUG.SAVE_BATCH_IMAGES_PRED = False
 _C.DEBUG.SAVE_HEATMAPS_GT = False
 _C.DEBUG.SAVE_HEATMAPS_PRED = False
 
+# Added
+_C.DATASET.ABSTAIN_LABEL = -1
+_C.DATASET.HIERARCHY = 'cocostuff/cocostuff10k_hierarchy.json'
+_C.DATASET.IGNORE_LABEL = 0
+_C.TRAIN.SIGMA = 0.0
+_C.TRAIN.ALT_EVERY = 2
+_C.CACHE_DIR = 'cached_samples/cocostuff10k/'
+
+_C.DATASET.THRESHOLD_FUNCTION = [1, 2]
 
 def update_config(cfg, args):
     cfg.defrost()
