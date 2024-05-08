@@ -2,12 +2,17 @@
 __pycache__/
 *.py[co]
 data/
+!data/acdc/acdc_hierarchy.json
+!data/cityscapes/cityscapes_hierarchy.json
+!data/cocostuff/cocostuff_hierarchy.json
+!data/pascal_ctx/pascal_ctx_hierarchy.json
+!data/list
+
 log/
 output/
 pretrained_models
 scripts/
 detail-api/
-data/list
 *.pth
 
 models/part_seg/*
