@@ -15,7 +15,7 @@ from PIL import Image
 import torch
 
 from .base_dataset import BaseDataset
-from detail import Detail
+from detail import detail as Detail
 
 class PASCALContext(BaseDataset):
     def __init__(self, 
